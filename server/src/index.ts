@@ -6,35 +6,50 @@ import fs from 'fs';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import os from 'os'; // Added for temp directory access
 
 dotenv.config();
 
 const app = express();
-// USE DYNAMIC PORT FOR DEPLOYMENT (Render/Heroku/Railway)
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'enterprise_secret_key_999';
 
-// 1. Storage & Persistence Setup
-const uploadDir = path.join(process.cwd(), 'uploads');
+// 1. Vercel-Compatible Storage Setup
+// In production (Vercel), we must use the OS temp directory
+const isProduction = process.env.NODE_ENV === 'production';
+const uploadDir = isProduction ? os.tmpdir() : path.join(process.cwd(), 'uploads');
 const dbPath = path.join(uploadDir, 'db.json');
 
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+if (!isProduction && !fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
 
-// Helper to save/load document statuses so they aren't lost on restart
+// Helper to save/load document statuses
 const loadRegistry = () => {
-    if (!fs.existsSync(dbPath)) return {};
-    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    try {
+        if (!fs.existsSync(dbPath)) return {};
+        return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    } catch (e) {
+        return {};
+    }
 };
-const saveRegistry = (data: any) => fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
+
+const saveRegistry = (data: any) => {
+    try {
+        fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
+    } catch (e) {
+        console.error("Registry save failed (expected in serverless):", e);
+    }
+};
 
 // 2. Middleware
 app.use(cors({ 
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173', 
+    origin: '*', // Set to specific Vercel URL later for security
     credentials: true 
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// Serve PDFs (Used by the viewer during signing)
+// Serve PDFs (Note: In Vercel, this only works for the current session)
 app.use('/uploads', express.static(uploadDir));
 
 const authenticateToken = (req: any, res: Response, next: NextFunction) => {
@@ -51,13 +66,13 @@ const authenticateToken = (req: any, res: Response, next: NextFunction) => {
 
 // --- ROUTES ---
 
-// Mock Login
+app.get('/api/health', (req, res) => res.send('Enterprise Engine Live 🚀'));
+
 app.post('/api/auth/login', (req, res) => {
     const token = jwt.sign({ email: req.body.email || 'user@test.com' }, JWT_SECRET, { expiresIn: '24h' });
     res.json({ token });
 });
 
-// Upload Document
 const upload = multer({ storage: multer.diskStorage({
     destination: uploadDir,
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
@@ -79,7 +94,6 @@ app.post('/api/docs/upload', authenticateToken, upload.single('pdf'), (req: any,
     res.json({ fileId });
 });
 
-// Get Document Status
 app.get('/api/docs/:id/status', authenticateToken, (req, res) => {
     const registry = loadRegistry();
     const doc = registry[req.params.id];
@@ -87,7 +101,6 @@ app.get('/api/docs/:id/status', authenticateToken, (req, res) => {
     res.json(doc);
 });
 
-// Reject Document
 app.post('/api/docs/:id/reject', authenticateToken, (req, res) => {
     const registry = loadRegistry();
     if (registry[req.params.id]) {
@@ -99,7 +112,6 @@ app.post('/api/docs/:id/reject', authenticateToken, (req, res) => {
     }
 });
 
-// Finalize, Sign & Generate Certificate
 app.post('/api/signatures/finalize', authenticateToken, async (req: any, res) => {
     const { fileId, signatureData, x, y } = req.body;
     try {
@@ -108,78 +120,55 @@ app.post('/api/signatures/finalize', authenticateToken, async (req: any, res) =>
         const firstPage = pdfDoc.getPages()[0];
         const { height, width } = firstPage.getSize();
 
-        // 1. Embed Signature Image
         const sigImg = await pdfDoc.embedPng(Buffer.from(signatureData.split(',')[1], 'base64'));
-        firstPage.drawImage(sigImg, { 
-            x, 
-            y: height - y - 50, 
-            width: 150, 
-            height: 50 
-        });
+        firstPage.drawImage(sigImg, { x, y: height - y - 50, width: 150, height: 50 });
 
-        // 2. Add Professional Audit Certificate Page
         const auditPage = pdfDoc.addPage([width, height]);
         const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
         
-        const topY = height - 100;
-
-        // Header
         auditPage.drawRectangle({ x: 0, y: height - 60, width, height: 60, color: rgb(0.05, 0.1, 0.2) });
         auditPage.drawText('DIGITAL SIGNATURE AUDIT REPORT', { x: 50, y: height - 35, size: 16, font: fontBold, color: rgb(1, 1, 1) });
-
-        // Content
-        auditPage.drawText('CERTIFICATE OF COMPLETION', { x: 50, y: topY, size: 22, font: fontBold });
         
         const auditLines = [
             { label: 'Document ID:', value: fileId },
             { label: 'Signer Email:', value: req.user.email },
             { label: 'Timestamp:', value: new Date().toUTCString() },
-            { label: 'IP Address:', value: req.ip || 'Remote' },
-            { label: 'Security Level:', value: 'JWT Authenticated / SSL Encrypted' },
-            { label: 'Digital Fingerprint:', value: Buffer.from(fileId).toString('hex').substring(0, 32).toUpperCase() }
+            { label: 'IP Address:', value: req.headers['x-forwarded-for'] || req.ip }
         ];
 
         auditLines.forEach((line, i) => {
-            auditPage.drawText(line.label, { x: 50, y: topY - 60 - (i * 30), size: 12, font: fontBold });
-            auditPage.drawText(line.value, { x: 200, y: topY - 60 - (i * 30), size: 12, font, color: rgb(0.3, 0.3, 0.3) });
+            auditPage.drawText(line.label, { x: 50, y: height - 120 - (i * 30), size: 12, font: fontBold });
+            auditPage.drawText(line.value, { x: 200, y: height - 120 - (i * 30), size: 12, font, color: rgb(0.3, 0.3, 0.3) });
         });
 
-        // "Verified" Stamp
-        auditPage.drawRectangle({ x: 50, y: 100, width: 200, height: 50, borderColor: rgb(0, 0.5, 0), borderWidth: 2 });
-        auditPage.drawText('VERIFIED DOCUMENT', { x: 75, y: 120, size: 12, font: fontBold, color: rgb(0, 0.5, 0) });
-
-        // 3. Save Final File
         const signedName = `signed-${fileId}`;
         const signedPath = path.join(uploadDir, signedName);
         fs.writeFileSync(signedPath, await pdfDoc.save());
 
-        // 4. Update Registry
         const registry = loadRegistry();
         if (registry[fileId]) {
             registry[fileId].status = 'SIGNED';
-            registry[fileId].signedAt = new Date().toISOString();
             saveRegistry(registry);
         }
 
+        // Return the download URL based on current host
+        const protocol = req.headers['x-forwarded-proto'] || 'http';
+        const host = req.headers.host;
         res.json({ 
-            downloadUrl: `${process.env.BACKEND_URL || 'http://localhost:5000'}/uploads/${signedName}`,
+            downloadUrl: `${protocol}://${host}/uploads/${signedName}`,
             status: 'SIGNED' 
         });
 
     } catch (e: any) {
-        console.error(e);
-        res.status(500).json({ error: "Internal processing error", details: e.message });
+        res.status(500).json({ error: e.message });
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`
-    ✅ ENTERPRISE SIGNATURE ENGINE STARTED
-    --------------------------------------
-    PORT: ${PORT}
-    MODE: ${process.env.NODE_ENV || 'development'}
-    URL:  http://localhost:${PORT}
-    --------------------------------------
-    `);
-});
+// For local development
+if (!isProduction) {
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+}
+
+// CRITICAL FOR VERCEL: Export the app
+export default app;
