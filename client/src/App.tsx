@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { FileUploader } from './components/FileUploader'
 import { PdfEditor } from './components/PdfEditor'
 import axios from 'axios'
+import App from './App';
 
 function App() {
   const [fileId, setFileId] = useState<string | null>(null);
