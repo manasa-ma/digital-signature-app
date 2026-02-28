@@ -1,57 +1,32 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 
-export const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: (fileId: string) => void }) => {
+export const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: (file: File) => void }) => {
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  // LOGIC TO FIND THE CORRECT URL
-  const getBackendUrl = () => {
-    const envUrl = import.meta.env.VITE_API_URL;
-    // Remove trailing slash if it exists
-    if (envUrl) return envUrl.replace(/\/$/, "");
-    // Fallback for local development
-    return "http://localhost:5000";
-  };
-
-  const handleUpload = async () => {
-    if (!file) return alert("Select a PDF");
-    const API_URL = getBackendUrl();
-    
-    setLoading(true);
-    try {
-      // 1. Login
-      const loginRes = await axios.post(`${API_URL}/api/auth/login`, { email: 'user@test.com' });
-      const token = loginRes.data.token;
-
-      // 2. Upload
-      const formData = new FormData();
-      formData.append('pdf', file);
-
-      const response = await axios.post(`${API_URL}/api/docs/upload`, formData, {
-        headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data' 
-        }
-      });
-
-      onUploadSuccess(response.data.fileId);
-    } catch (error: any) {
-      console.error("DEBUG:", error);
-      // This will tell us the EXACT URL that failed
-      alert(`CONNECTION FAILED!\nURL: ${API_URL}\nError: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
+  const handleProceed = () => {
+    if (!file) return alert("Please select a PDF file");
+    onUploadSuccess(file);
   };
 
   return (
-    <div className="bg-white p-10 rounded-2xl shadow-xl border border-gray-100 flex flex-col items-center">
-      <input type="file" accept=".pdf" className="mb-4" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-      <button onClick={handleUpload} disabled={loading} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold">
-        {loading ? "Connecting..." : "Upload & Sign"}
+    <div className="bg-white p-10 rounded-2xl shadow-xl border border-gray-100 flex flex-col items-center max-w-md w-full">
+      <div className="w-12 h-12 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold mb-4">1</div>
+      <h3 className="text-lg font-bold text-slate-800 mb-2">Upload Document</h3>
+      <p className="text-sm text-slate-500 mb-6 text-center">Your file stays in your browser memory for privacy.</p>
+      
+      <input 
+        type="file" 
+        accept="application/pdf"
+        className="mb-6 text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+        onChange={(e) => setFile(e.target.files?.[0] || null)}
+      />
+      
+      <button 
+        onClick={handleProceed}
+        className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg"
+      >
+        Proceed to Sign
       </button>
-      <p className="mt-4 text-[10px] text-gray-400">Current Target: {getBackendUrl()}</p>
     </div>
   );
 };
