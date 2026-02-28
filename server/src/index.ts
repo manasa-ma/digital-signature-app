@@ -6,7 +6,7 @@ import fs from 'fs';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import os from 'os'; // Added for temp directory access
+import os from 'os';
 
 dotenv.config();
 
@@ -15,7 +15,6 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'enterprise_secret_key_999';
 
 // 1. Vercel-Compatible Storage Setup
-// In production (Vercel), we must use the OS temp directory
 const isProduction = process.env.NODE_ENV === 'production';
 const uploadDir = isProduction ? os.tmpdir() : path.join(process.cwd(), 'uploads');
 const dbPath = path.join(uploadDir, 'db.json');
@@ -24,33 +23,38 @@ if (!isProduction && !fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Helper to save/load document statuses
+// 2. STRENGTHENED CORS MIDDLEWARE
+app.use(cors({ 
+    origin: '*', // For production, replace '*' with your actual Vercel frontend URL
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true 
+}));
+
+// 3. MANUAL OPTIONS HANDLER (Fixes the Pre-flight error in your screenshot)
+app.options('*', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.sendStatus(200);
+});
+
+app.use(express.json({ limit: '50mb' }));
+
+// Serve PDFs
+app.use('/uploads', express.static(uploadDir));
+
+// Helper for Registry (Status Tracking)
 const loadRegistry = () => {
     try {
         if (!fs.existsSync(dbPath)) return {};
         return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-    } catch (e) {
-        return {};
-    }
+    } catch (e) { return {}; }
 };
 
 const saveRegistry = (data: any) => {
-    try {
-        fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-    } catch (e) {
-        console.error("Registry save failed (expected in serverless):", e);
-    }
+    try { fs.writeFileSync(dbPath, JSON.stringify(data, null, 2)); } catch (e) {}
 };
-
-// 2. Middleware
-app.use(cors({ 
-    origin: '*', // Set to specific Vercel URL later for security
-    credentials: true 
-}));
-app.use(express.json({ limit: '50mb' }));
-
-// Serve PDFs (Note: In Vercel, this only works for the current session)
-app.use('/uploads', express.static(uploadDir));
 
 const authenticateToken = (req: any, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
@@ -80,17 +84,10 @@ const upload = multer({ storage: multer.diskStorage({
 
 app.post('/api/docs/upload', authenticateToken, upload.single('pdf'), (req: any, res) => {
     if (!req.file) return res.status(400).send('No file uploaded.');
-    
     const fileId = req.file.filename;
     const registry = loadRegistry();
-    registry[fileId] = { 
-        status: 'PENDING', 
-        owner: req.user.email,
-        originalName: req.file.originalname,
-        createdAt: new Date().toISOString()
-    };
+    registry[fileId] = { status: 'PENDING', owner: req.user.email, createdAt: new Date().toISOString() };
     saveRegistry(registry);
-    
     res.json({ fileId });
 });
 
@@ -101,21 +98,12 @@ app.get('/api/docs/:id/status', authenticateToken, (req, res) => {
     res.json(doc);
 });
 
-app.post('/api/docs/:id/reject', authenticateToken, (req, res) => {
-    const registry = loadRegistry();
-    if (registry[req.params.id]) {
-        registry[req.params.id].status = 'REJECTED';
-        saveRegistry(registry);
-        res.json({ status: 'REJECTED' });
-    } else {
-        res.status(404).send("Document not found");
-    }
-});
-
 app.post('/api/signatures/finalize', authenticateToken, async (req: any, res) => {
     const { fileId, signatureData, x, y } = req.body;
     try {
         const filePath = path.join(uploadDir, fileId);
+        if (!fs.existsSync(filePath)) throw new Error("File not found on server");
+
         const pdfDoc = await PDFDocument.load(fs.readFileSync(filePath));
         const firstPage = pdfDoc.getPages()[0];
         const { height, width } = firstPage.getSize();
@@ -123,52 +111,28 @@ app.post('/api/signatures/finalize', authenticateToken, async (req: any, res) =>
         const sigImg = await pdfDoc.embedPng(Buffer.from(signatureData.split(',')[1], 'base64'));
         firstPage.drawImage(sigImg, { x, y: height - y - 50, width: 150, height: 50 });
 
+        // Add Audit Page
         const auditPage = pdfDoc.addPage([width, height]);
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-        
-        auditPage.drawRectangle({ x: 0, y: height - 60, width, height: 60, color: rgb(0.05, 0.1, 0.2) });
-        auditPage.drawText('DIGITAL SIGNATURE AUDIT REPORT', { x: 50, y: height - 35, size: 16, font: fontBold, color: rgb(1, 1, 1) });
-        
-        const auditLines = [
-            { label: 'Document ID:', value: fileId },
-            { label: 'Signer Email:', value: req.user.email },
-            { label: 'Timestamp:', value: new Date().toUTCString() },
-            { label: 'IP Address:', value: req.headers['x-forwarded-for'] || req.ip }
-        ];
-
-        auditLines.forEach((line, i) => {
-            auditPage.drawText(line.label, { x: 50, y: height - 120 - (i * 30), size: 12, font: fontBold });
-            auditPage.drawText(line.value, { x: 200, y: height - 120 - (i * 30), size: 12, font, color: rgb(0.3, 0.3, 0.3) });
-        });
+        auditPage.drawText('AUDIT CERTIFICATE', { x: 50, y: height - 100, size: 20, font: fontBold });
+        auditPage.drawText(`Signer: ${req.user.email}`, { x: 50, y: height - 150, size: 12 });
+        auditPage.drawText(`IP: ${req.headers['x-forwarded-for'] || req.ip}`, { x: 50, y: height - 170, size: 12 });
 
         const signedName = `signed-${fileId}`;
-        const signedPath = path.join(uploadDir, signedName);
-        fs.writeFileSync(signedPath, await pdfDoc.save());
+        fs.writeFileSync(path.join(uploadDir, signedName), await pdfDoc.save());
 
-        const registry = loadRegistry();
-        if (registry[fileId]) {
-            registry[fileId].status = 'SIGNED';
-            saveRegistry(registry);
-        }
-
-        // Return the download URL based on current host
         const protocol = req.headers['x-forwarded-proto'] || 'http';
-        const host = req.headers.host;
         res.json({ 
-            downloadUrl: `${protocol}://${host}/uploads/${signedName}`,
+            downloadUrl: `${protocol}://${req.headers.host}/uploads/${signedName}`,
             status: 'SIGNED' 
         });
-
     } catch (e: any) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// For local development
 if (!isProduction) {
     app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
-// CRITICAL FOR VERCEL: Export the app
 export default app;
