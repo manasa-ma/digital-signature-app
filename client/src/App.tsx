@@ -1,32 +1,49 @@
 import { useState, useEffect } from 'react'
 import { FileUploader } from './components/FileUploader'
 import { PdfEditor } from './components/PdfEditor'
-import axios from 'axios'
-import App from './App';
 
 function App() {
-  const [fileId, setFileId] = useState<string | null>(null);
+  // NEW: Store the actual File object instead of just the ID string
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
-  // Optional: Clean up token on first load to ensure fresh login
+  // Clean up token on first load to ensure a fresh secure session
   useEffect(() => {
     localStorage.removeItem('token');
   }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans">
-      {!fileId ? (
+      {!selectedFile ? (
+        // UPLOADER SCREEN
         <div className="flex flex-col items-center justify-center min-h-screen p-4">
           <div className="text-center mb-10">
-            <h1 className="text-5xl font-extrabold text-slate-900 mb-2 tracking-tight">Digital Signature</h1>
-            <p className="text-slate-500">Enterprise document management system</p>
+            <h1 className="text-5xl font-extrabold text-slate-900 mb-2 tracking-tight">
+              Digital Signature
+            </h1>
+            <p className="text-slate-500 font-medium">
+              Enterprise stateless document management system
+            </p>
           </div>
-          <FileUploader onUploadSuccess={(id) => setFileId(id)} />
+          
+          {/* On success, we save the actual file to state */}
+          <FileUploader onUploadSuccess={(file) => setSelectedFile(file)} />
+          
+          <div className="mt-8 text-slate-400 text-xs flex gap-4">
+            <span>✔ JWT Protected</span>
+            <span>✔ No-Storage Privacy</span>
+            <span>✔ Audit Ready</span>
+          </div>
         </div>
       ) : (
-        <PdfEditor fileId={fileId} />
+        // EDITOR SCREEN
+        // We pass the file and a way to go back
+        <PdfEditor 
+          file={selectedFile} 
+          onBack={() => setSelectedFile(null)} 
+        />
       )}
     </div>
   )
 }
 
-export default App
+export default App;
