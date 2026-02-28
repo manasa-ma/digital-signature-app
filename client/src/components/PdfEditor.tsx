@@ -2,11 +2,12 @@ import { useState, useRef, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import axios from 'axios';
 import { SignatureModal } from './SignatureModal';
-import { Loader2, Download, Move, XCircle, ShieldCheck } from 'lucide-react';
+import { Loader2, Download, Move, XCircle, ShieldCheck, AlertCircle } from 'lucide-react';
 
 // Setup dynamic API URL
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
+// Configure the worker to use the same version as the library
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
 
 export const PdfEditor = ({ fileId }: { fileId: string }) => {
@@ -16,16 +17,16 @@ export const PdfEditor = ({ fileId }: { fileId: string }) => {
   const [position, setPosition] = useState({ x: 50, y: 50 });
   const [isDragging, setIsDragging] = useState(false);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const token = localStorage.getItem('token');
   
-  // UPDATED: Use dynamic URL for PDF viewing
-  const pdfUrl = `${API_BASE_URL}/uploads/${fileId}`;
+  // FIX: Point to the robust API route instead of the /uploads folder
+  const pdfUrl = `${API_BASE_URL}/api/files/${fileId}`;
 
   // Track Lifecycle Status
   useEffect(() => {
-    // UPDATED: Use dynamic URL
     axios.get(`${API_BASE_URL}/api/docs/${fileId}/status`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -35,26 +36,23 @@ export const PdfEditor = ({ fileId }: { fileId: string }) => {
 
   const handleFinalize = async () => {
     try {
-      // UPDATED: Use dynamic URL
       const res = await axios.post(`${API_BASE_URL}/api/signatures/finalize`, 
         { fileId, signatureData: signatureImg, x: position.x, y: position.y },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
-      // The backend returns a full URL, but we ensure it's correct
       setSignedUrl(res.data.downloadUrl);
       setStatus('SIGNED');
       alert("Document Signed Successfully!");
-    } catch (e) { 
+    } catch (e: any) { 
       console.error(e);
-      alert("Error signing document. Check console."); 
+      alert(`Error: ${e.response?.data?.error || "Failed to sign document"}`); 
     }
   };
 
   const handleReject = async () => {
     if (!confirm("Reject this document? This action is permanent.")) return;
     try {
-      // UPDATED: Use dynamic URL
       await axios.post(`${API_BASE_URL}/api/docs/${fileId}/reject`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -76,7 +74,7 @@ export const PdfEditor = ({ fileId }: { fileId: string }) => {
           }`}>
             {status}
           </span>
-          <span className="text-white text-sm truncate max-w-[200px]">{fileId}</span>
+          <span className="text-white text-sm truncate max-w-[200px] font-mono">{fileId}</span>
         </div>
 
         <div className="flex gap-3">
@@ -111,40 +109,49 @@ export const PdfEditor = ({ fileId }: { fileId: string }) => {
             </div>
         )}
         
-        <div 
-          ref={containerRef} 
-          onMouseMove={(e) => {
-            if (isDragging && containerRef.current) {
-                const rect = containerRef.current.getBoundingClientRect();
-                setPosition({ x: e.clientX - rect.left - 75, y: e.clientY - rect.top - 25 });
-            }
-          }} 
-          onMouseUp={() => setIsDragging(false)} 
-          className={`relative bg-white shadow-2xl transition-all ${status === 'REJECTED' ? 'grayscale' : ''}`}
-        >
-          <Document 
-            file={pdfUrl} 
-            loading={<div className="p-20 flex flex-col items-center gap-4 text-slate-400 font-medium">
-                <Loader2 className="animate-spin w-8 h-8 text-blue-500" />
-                Loading PDF...
-            </div>}
-          >
-            <Page pageNumber={1} width={700} renderTextLayer={false} renderAnnotationLayer={false} />
-          </Document>
-
-          {signatureImg && status === 'PENDING' && (
-            <div 
-                onMouseDown={() => setIsDragging(true)} 
-                style={{ position: 'absolute', left: position.x, top: position.y }} 
-                className="cursor-move border-2 border-dashed border-blue-500 bg-blue-50/50 group"
-            >
-                <div className="absolute -top-6 left-0 bg-blue-600 text-[8px] text-white px-1 rounded hidden group-hover:block">
-                    Drag to position
-                </div>
-              <img src={signatureImg} className="w-[150px] h-[50px] pointer-events-none" alt="signature" />
+        {loadError ? (
+            <div className="bg-slate-900 border border-red-500/30 p-10 rounded-xl text-center flex flex-col items-center gap-4">
+                <AlertCircle className="text-red-500 w-10 h-10" />
+                <p className="text-white font-medium">{loadError}</p>
+                <button onClick={() => window.location.reload()} className="text-blue-400 text-sm underline">Try uploading again</button>
             </div>
-          )}
-        </div>
+        ) : (
+          <div 
+            ref={containerRef} 
+            onMouseMove={(e) => {
+              if (isDragging && containerRef.current) {
+                  const rect = containerRef.current.getBoundingClientRect();
+                  setPosition({ x: e.clientX - rect.left - 75, y: e.clientY - rect.top - 25 });
+              }
+            }} 
+            onMouseUp={() => setIsDragging(false)} 
+            className={`relative bg-white shadow-2xl transition-all ${status === 'REJECTED' ? 'grayscale' : ''}`}
+          >
+            <Document 
+              file={pdfUrl} 
+              onLoadError={() => setLoadError("File expired. Vercel temporary storage only lasts 30 seconds. Please upload and sign quickly.")}
+              loading={<div className="p-20 flex flex-col items-center gap-4 text-slate-400 font-medium">
+                  <Loader2 className="animate-spin w-8 h-8 text-blue-500" />
+                  Streaming Secure PDF...
+              </div>}
+            >
+              <Page pageNumber={1} width={700} renderTextLayer={false} renderAnnotationLayer={false} />
+            </Document>
+
+            {signatureImg && status === 'PENDING' && (
+              <div 
+                  onMouseDown={() => setIsDragging(true)} 
+                  style={{ position: 'absolute', left: position.x, top: position.y }} 
+                  className="cursor-move border-2 border-dashed border-blue-500 bg-blue-50/50 group"
+              >
+                  <div className="absolute -top-6 left-0 bg-blue-600 text-[8px] text-white px-1 rounded hidden group-hover:block whitespace-nowrap">
+                      Drag to position
+                  </div>
+                <img src={signatureImg} className="w-[150px] h-[50px] pointer-events-none" alt="signature" />
+              </div>
+            )}
+          </div>
+        )}
       </div>
       
       {isModalOpen && (
